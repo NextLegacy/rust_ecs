@@ -48,7 +48,9 @@ impl TypeErasedVec {
     }
 
     pub fn emplace(&mut self) -> *mut u8 {
-        self.reserve(1);
+        if self.len == self.capacity {
+            self.reserve(self.capacity * 2);
+        }
         let ptr = unsafe { self.data.as_ptr().add(self.len * self.layout.size()) };
         self.len += 1;
         ptr

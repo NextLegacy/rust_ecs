@@ -1,6 +1,4 @@
-//use super::paged_vec::PagedVec;
-
-use std::{collections::HashMap, ptr::NonNull};
+use std::{ptr::NonNull};
 
 use super::type_erased_vec::TypeErasedVec;
 
@@ -14,7 +12,7 @@ pub struct SparseSet<const PAGE_SIZE: usize>
 {
     dense_indecies: TypeErasedVec,
     dense: TypeErasedVec,
-    sparse: HashMap<usize, [usize; PAGE_SIZE]>, // TODO: get rid of hashmap
+    sparse: Vec<[usize; PAGE_SIZE]>, // Use a vector of options instead of a hashmap
 }
 
 impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
@@ -23,9 +21,11 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
     {
         let mut dense = TypeErasedVec::new::<T>();
         let mut dense_indecies = TypeErasedVec::new::<SpraseDenseValueIndex>();
+        let mut sparse: Vec<[usize; PAGE_SIZE]> = Vec::new();
 
         dense.reserve(PAGE_SIZE);
         dense_indecies.reserve(PAGE_SIZE);
+        sparse.reserve(PAGE_SIZE);
 
         dense.emplace();
         dense_indecies.emplace();
@@ -34,7 +34,7 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
         {
             dense_indecies,
             dense,
-            sparse: HashMap::new(),
+            sparse
         }
     }
 
@@ -48,8 +48,13 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
     pub fn emplace(&mut self, index: usize) -> bool
     {
         let (page, index) = Self::map_index(index);
-        let page_sparse = self.sparse.entry(page).or_insert_with(|| [0; PAGE_SIZE]);
 
+        if page >= self.sparse.len() {
+            self.sparse.resize(page + 1, [0; PAGE_SIZE]);
+        }
+
+        let page_sparse = &mut self.sparse[page];
+    
         if page_sparse[index] != 0
         {
             return false;
@@ -71,7 +76,7 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
 
     pub fn set<T>(&mut self, index: usize, value: T)
     {
-        if (self.emplace(index))
+        if self.emplace(index)
         {
             let dense_index = self.dense.len() - 1;
             *self.dense.get_typed_mut::<T>(dense_index) = value;
@@ -81,7 +86,7 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
     pub fn get<T>(&self, index: usize) -> Option<&T>
     {
         let (page, index) = Self::map_index(index);
-        self.sparse.get(&page).and_then(|page_sparse| 
+        self.sparse.get(page).and_then(|page_sparse| 
         {
             let dense_index = page_sparse[index];
             if dense_index != 0
@@ -99,7 +104,7 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
     {
         let (page, index) = Self::map_index(index);
 
-        if let Some(page_sparse) = self.sparse.get_mut(&page)
+        if let Some(page_sparse) = self.sparse.get_mut(page)
         {
             let dense_index = page_sparse[index];
             let last_dense_index = self.dense.len() - 1;
@@ -113,7 +118,7 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
 
                 if dense_index != last_dense_index
                 {
-                    let last_page_sparse = self.sparse.get_mut(&last_page).unwrap();
+                    let last_page_sparse = self.sparse.get_mut(last_page).unwrap();
                     last_page_sparse[last_index] = dense_index;
                     self.dense.remove_swap_with_last(dense_index);
                     self.dense_indecies.remove_swap_with_last(dense_index);
@@ -147,5 +152,10 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
             let idx = index.sparse_page * PAGE_SIZE + index.sparse_index;
             (idx, value)
         })
+    }
+
+    pub fn len(&self) -> usize
+    {
+        self.dense.len() - 1
     }
 }

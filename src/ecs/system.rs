@@ -1,6 +1,6 @@
 use std::any::Any;
 
-use super::{ECSStorage, ECS};
+use super::ECSStorage;
 
 pub trait System
 {

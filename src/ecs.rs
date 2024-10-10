@@ -3,9 +3,11 @@ use std::{any::{Any, TypeId}, collections::HashMap, iter, ops::Deref};
 pub mod component;
 pub mod system;
 pub mod entity;
+pub mod query;
 
 use component::{Component, ComponentTypeUUID, ComponentUUID};
 use entity::EntityUUID;
+use query::{ComponentQuery, ComponentQueryMut};
 use system::System;
 
 use crate::data_structures::sparse_set::SparseSet;
@@ -61,30 +63,24 @@ impl ECSStorage
 
     pub fn remove_entity(&mut self, uuid: EntityUUID) -> bool
     {
-        if let Some(bit_set) = self.entity_components_bitset.remove(&uuid)
-        {
-            //iterate over bits and remove components
-            let mut component_type_uuid: ComponentTypeUUID = 0;
-            for bits in bit_set.data()
-            {
-                for _ in 0..64
-                {
-                    if bits & 1 != 0
-                    {
-                        if let Some(components) = self.components.get_mut(&component_type_uuid)
-                        {
-                            components.remove(uuid);
-                        }
+        if let Some(bit_set) = self.entity_components_bitset.remove(&uuid) {
+            let mut component_type_uuid = 0;
+            for bits in bit_set.data() {
+                let mut bit = 0;
+                while bit < usize::BITS as usize {
+                    if bits & (1 << bit) != 0 {
+                        let component_type_id = self.component_type_id_to_uuid.iter().find(|(_, &uuid)| uuid == component_type_uuid).unwrap().0;
+                        let component_type_uuid = self.component_type_id_to_uuid.get(component_type_id).unwrap();
+                        let components = self.components.get_mut(component_type_uuid).unwrap();
+                        components.remove(uuid);
                     }
-                    component_type_uuid+=1;
+                    bit += 1;
+                    component_type_uuid += 1;
                 }
             }
-            
             self.deleted_entities.push(uuid);
             true
-        }
-        else
-        {
+        } else {
             false
         }
     }
@@ -103,10 +99,13 @@ impl ECSStorage
             self.component_uuid_counter
         });
 
-        
         let components = self.components.entry(component_type_uuid).or_insert_with(|| SparseSet::<1000>::new::<T>());
         
         components.emplace(uuid);
+
+        if let Some(bitset) = self.entity_components_bitset.get_mut(&uuid) {
+            bitset.set(component_type_uuid);
+        }
     }
 
     pub fn remove_component<T>(&mut self, uuid: EntityUUID) where T: 'static
@@ -137,26 +136,40 @@ impl ECSStorage
             None
         }
     }
-    pub fn iter_components<T: 'static>(&self) -> Option<impl Iterator<Item = (usize, &T)>>
+    pub fn iter_components<T: 'static>(&self) -> Box<dyn Iterator<Item = (usize, &T)> + '_>
     {
         let component_type_id = TypeId::of::<T>();
         let component_type_uuid = match self.component_type_id_to_uuid.get(&component_type_id) {
             Some(&uuid) => uuid,
-            None => return None,
+            None => return Box::new(iter::empty()),
         };
 
-        self.components.get(&component_type_uuid).map(|components| components.iter::<T>())
+        match self.components.get(&component_type_uuid) {
+            Some(components) => Box::new(components.iter::<T>()),
+            None => Box::new(iter::empty()),
+        }
     }
 
-    pub fn iter_components_mut<T: 'static>(&mut self) -> Option<impl Iterator<Item = (usize, &mut T)>>
+    pub fn iter_components_mut<T: 'static>(&mut self) -> Box<dyn Iterator<Item = (usize, &mut T)> + '_>
     {
         let component_type_id = TypeId::of::<T>();
         let component_type_uuid = match self.component_type_id_to_uuid.get(&component_type_id) {
             Some(&uuid) => uuid,
-            None => return None,
+            None => return Box::new(iter::empty()),
         };
 
-        self.components.get_mut(&component_type_uuid).map(|components| components.iter_mut::<T>())
+        match self.components.get_mut(&component_type_uuid) {
+            Some(components) => Box::new(components.iter_mut::<T>()),
+            None => Box::new(iter::empty()),
+        }
+    }
+
+    pub fn query<'a, T: ComponentQuery<'a>>(&'a self) -> T::Iter {
+        T::query(self)
+    }
+
+    pub fn query_mut<'a, T: ComponentQueryMut<'a>>(&'a mut self) -> T::Iter {
+        T::query_mut(self)
     }
 }
 
@@ -201,14 +214,19 @@ impl ECS
         self.storage.get_component::<T>(uuid)
     }
 
-    pub fn iter_components<T: 'static>(&self) -> Option<impl Iterator<Item = (usize, &T)>>
+    pub fn iter_components<T: 'static>(&self) -> impl Iterator<Item = (usize, &T)>
     {
         self.storage.iter_components::<T>()
     }
 
-    pub fn iter_components_mut<T: 'static>(&mut self) -> Option<impl Iterator<Item = (usize, &mut T)>>
+    pub fn iter_components_mut<T: 'static>(&mut self) -> impl Iterator<Item = (usize, &mut T)>
     {
         self.storage.iter_components_mut::<T>()
+    }
+
+    pub fn entities_count(&self) -> usize
+    {
+        self.storage.entity_components_bitset.len()
     }
 
     pub fn storage(&self) -> &ECSStorage
@@ -263,14 +281,10 @@ impl ECS
         }
     }
 
-    pub fn serialize<T>(&mut self) -> String where T: serde::Serialize + 'static
+    pub fn serialize<T: serde::Serialize + 'static>(&self) -> Result<String, serde_json::Error>
     {
-        let mut result = String::new();
-    
-        self.iter_components::<T>().unwrap().for_each(|(_, component)| {
-            result.push_str(&serde_json::to_string(component).unwrap());
-        });
-
-        result
+        self.storage.query::<(&T,)>().map(|(entity, component)| {
+            serde_json::to_string(&component)
+        }).collect()
     }
 }
