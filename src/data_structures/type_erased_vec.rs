@@ -49,7 +49,7 @@ impl TypeErasedVec {
 
     pub fn emplace(&mut self) -> *mut u8 {
         if self.len == self.capacity {
-            self.reserve(self.capacity * 2);
+            self.reserve((self.capacity + 1) * 2);
         }
         let ptr = unsafe { self.data.as_ptr().add(self.len * self.layout.size()) };
         self.len += 1;
@@ -66,22 +66,15 @@ impl TypeErasedVec {
         unsafe { std::ptr::write(ptr as *mut T, value) };
     }
 
-    pub fn get(&self, index: usize) -> &u8 {
-        assert!(index < self.len);
-        unsafe { &*self.data.as_ptr().add(index * self.layout.size()) }
-    }
-
-    pub fn get_mut(&mut self, index: usize) -> &mut u8 {
-        assert!(index < self.len);
-        unsafe { &mut *self.data.as_ptr().add(index * self.layout.size()) }
-    }
-
     pub fn get_typed<T>(&self, index: usize) -> &T {
-        unsafe { &*(self.get(index) as *const u8 as *const T) }
+        unsafe { &*(self.data.as_ptr().add(index * self.layout.size()) as *const T) }
     }
 
     pub fn get_typed_mut<T>(&mut self, index: usize) -> &mut T {
-        unsafe { &mut *(self.get_mut(index) as *mut u8 as *mut T) }
+        assert!(index < self.len);
+        unsafe {
+            &mut *(self.data.as_ptr().add(index * self.layout.size()) as *mut T)
+        }
     }
 
     pub fn remove_swap_with_last(&mut self, index: usize) {
@@ -113,7 +106,9 @@ impl TypeErasedVec {
     }
 
     pub fn as_typed_slice_mut<T>(&mut self) -> &mut [T] {
-        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, self.len) }
+        unsafe {
+            std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, self.len)
+        }
     }
 
     pub fn as_ptr(&self) -> *const u8 {
@@ -157,15 +152,7 @@ impl TypeErasedVec {
 impl Drop for TypeErasedVec {
     fn drop(&mut self) {
         unsafe {
-            std::alloc::dealloc(self.data.as_ptr(), self.layout);
+            std::alloc::System.dealloc(self.data.as_ptr(), self.layout);
         }
-    }
-}
-
-impl Index<usize> for TypeErasedVec {
-    type Output = u8;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        self.get(index)
     }
 }

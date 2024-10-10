@@ -1,3 +1,4 @@
+use data_structures::type_erased_vec::TypeErasedVec;
 use ecs::system::System;
 use serde::Serialize;
 
@@ -13,6 +14,10 @@ pub struct MySystem;
 
 impl ecs::system::System for MySystem 
 {
+    fn new() -> Self {
+        Self
+    }
+
     fn start(&self, ecs: &mut ecs::ECSStorage) {
         ecs.iter_components_mut::<A>().for_each(|(entity, a)| {
             a.x = 42;
@@ -25,11 +30,11 @@ impl ecs::system::System for MySystem
 
     fn update(&self, ecs: &mut ecs::ECSStorage) {
         ecs.iter_components::<A>().for_each(|(entity, a)| {
-            //println!("Entity {} has A: {}", entity, a.x);
+            println!("Entity {} has A: {}", entity, a.x);
         });
 
         ecs.iter_components::<B>().for_each(|(entity, b)| {
-            //println!("Entity {} has B: {}", entity, b.y);
+            println!("Entity {} has B: {}", entity, b.y);
         });
 
         ecs.query::<(&A,)>().for_each(|(entity, a)| {
@@ -38,13 +43,13 @@ impl ecs::system::System for MySystem
         
         ecs.query_mut::<(&A, &mut B)>().for_each(|(entity, a, b)| {
             b.y = 42.0;
-            //println!("Entity {} has A: {} and B: {}", entity, a.x, b.y);
+            println!("Entity {} has A: {} and B: {}", entity, a.x, b.y);
         });
 
         ecs.query_mut::<(&A, &mut B, &mut C)>().for_each(|(entity, a, b, c)| {
             b.y = 42.0;
             c.z = 42.0;
-            //println!("Entity {} has A: {}, B: {} and C: {}", entity, a.x, b.y, c.z);
+            println!("Entity {} has A: {}, B: {} and C: {}", entity, a.x, b.y, c.z);
         });
     }
 }
@@ -104,6 +109,12 @@ fn benchmark_main()
 
 fn main() 
 {
+    //let mut vec = TypeErasedVec::new::<u8>();
+    //vec.push::<u8>(1);
+    //vec.push::<u8>(1);
+    //vec.push::<u8>(1);
+    //vec.as_typed_slice_mut::<i32>()[0] = 1;
+     
     let mut ecs = ecs::ECS::new();
 
     let entity1 = ecs.create_entity();
@@ -133,7 +144,8 @@ fn main()
     let serialized = ecs.serialize::<A>();
     println!("Serialized: {:?}", serialized);
 
-    //stress_test();
+    // stress_test();
+    
 }
 
 fn stress_test() -> u32

@@ -241,12 +241,7 @@ impl ECS
 
     pub fn register_system<TSystem>(&mut self) where TSystem: System + 'static
     {
-        let layout = std::alloc::Layout::new::<TSystem>();
-        let ptr = unsafe { std::alloc::alloc(layout) };
-
-        let system = unsafe { std::ptr::read(ptr as *const TSystem) };
-    
-        self.dynamic_systems.entry(TypeId::of::<TSystem>()).or_insert_with(|| Box::new(system));
+        self.dynamic_systems.insert(TypeId::of::<TSystem>(), Box::new(TSystem::new()));
     }
 
     pub fn start(&mut self)

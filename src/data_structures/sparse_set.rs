@@ -8,6 +8,18 @@ pub struct SpraseDenseValueIndex
     sparse_index: usize,
 }
 
+impl SpraseDenseValueIndex
+{
+    pub fn new(sparse_page: usize, sparse_index: usize) -> Self
+    {
+        Self
+        {
+            sparse_page,
+            sparse_index
+        }
+    }
+}
+
 pub struct SparseSet<const PAGE_SIZE: usize>
 {
     dense_indecies: TypeErasedVec,
@@ -62,12 +74,13 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
         
         self.dense.emplace();
         self.dense_indecies.emplace();
+        //self.dense_indecies.push(SpraseDenseValueIndex::new(page, index));
+
+        let dense_index_value = self.dense_indecies.get_typed_mut::<SpraseDenseValueIndex>(self.dense_indecies.len() - 1);
+        dense_index_value.sparse_index = index;
+        dense_index_value.sparse_page = page;
 
         let dense_index = self.dense.len() - 1;
-        let dense_value_index = self.dense_indecies.get_typed_mut::<SpraseDenseValueIndex>(dense_index);
-
-        dense_value_index.sparse_page = page;
-        dense_value_index.sparse_index = index;
 
         page_sparse[index] = dense_index;
 
