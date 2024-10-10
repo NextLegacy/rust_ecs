@@ -3,7 +3,7 @@ use std::{alloc::GlobalAlloc, ops::Index, ptr::NonNull};
 pub struct TypeErasedVec {
     data: NonNull<u8>,
     layout: std::alloc::Layout,
-    len: usize,
+    bytes: usize, // in bytes
     capacity: usize, // in items -> total bytes = layout.size() * capacity
 }
 
@@ -16,50 +16,58 @@ impl TypeErasedVec {
         Self {
             data,
             layout,
-            len: 0,
+            bytes: 0,
             capacity: 0,
+        }
+    }
+
+    pub fn set_capacity(&mut self, new_capacity: usize) {
+        let new_layout = std::alloc::Layout::from_size_align(self.layout.size() * new_capacity, self.layout.align()).unwrap();
+        let new_data = unsafe { std::alloc::System.alloc(new_layout) };
+        let new_data = NonNull::new(new_data).expect("Allocation failed");
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(self.data.as_ptr(), new_data.as_ptr(), self.bytes);
+            std::alloc::System.dealloc(self.data.as_ptr(), self.layout);
+        }
+
+        self.data = new_data;
+        self.capacity = new_capacity;
+    }
+
+    pub fn reserve(&mut self, additional: usize) {
+        if self.len() + additional > self.capacity {
+            let new_capacity = self.capacity + additional;
+            self.set_capacity(new_capacity);    
         }
     }
 
     pub fn reserve_typed<T>(&mut self, additional: usize) {
         let layout = std::alloc::Layout::new::<T>();
-        self.reserve(additional * layout.size() / self.layout.size());
-    }
-
-    pub fn reserve(&mut self, additional: usize) {
-        let new_len = self.len + additional;
-        if new_len > self.capacity {
-            let new_capacity = new_len.next_power_of_two();
-            let new_layout = std::alloc::Layout::from_size_align(self.layout.size() * new_capacity, self.layout.align()).unwrap();
-            let new_data = unsafe { std::alloc::System.alloc(new_layout) };
-            let new_data = NonNull::new(new_data).expect("Allocation failed");
-
-            unsafe {
-                std::ptr::copy_nonoverlapping(self.data.as_ptr(), new_data.as_ptr(), self.len * self.layout.size());
-                std::alloc::System.dealloc(self.data.as_ptr(), self.layout);
-            }
-
-            self.data = new_data;
-            self.capacity = new_capacity;
-        }
+        let additional = (additional * layout.size() / self.layout.size()).max(1);
+        self.reserve(additional);
     }
 
     pub fn emplace(&mut self) {
-        if self.len == self.capacity {
-            self.reserve(self.capacity + 1);
+        self.reserve(1);
+        unsafe {
+            let _ = self.data.as_ptr().add(self.bytes);
         }
-        unsafe { self.data.as_ptr().add(self.len * self.layout.size()) };
-        self.len += 1;
+        self.bytes += self.layout.size();
     }
 
-    pub fn emplace_typed<T>(&mut self) {
+    pub fn emplace_typed<T>(&mut self) -> &mut T {
+        let layout = std::alloc::Layout::new::<T>();
         self.reserve_typed::<T>(1);
-        self.emplace();
+        let offset = self.bytes;
+        self.bytes += layout.size();
+        unsafe {
+            &mut *(self.data.as_ptr().add(offset) as *mut T)
+        }
     }
 
     pub fn push<T>(&mut self, value: T) {
-        self.emplace_typed::<T>();
-        *self.get_typed_mut::<T>(self.len - 1) = value;
+        *self.emplace_typed::<T>() = value;
     }
 
     pub fn get_typed<T>(&self, index: usize) -> &T {
@@ -67,7 +75,7 @@ impl TypeErasedVec {
     }
 
     pub fn get_typed_mut<T>(&mut self, index: usize) -> &mut T {
-        assert!(index < self.len);
+        assert!(index < self.len());
         let layout = std::alloc::Layout::new::<T>();
         unsafe {
             &mut *(self.data.as_ptr().add(index * layout.size()) as *mut T)
@@ -75,11 +83,11 @@ impl TypeErasedVec {
     }
 
     pub fn remove_swap_with_last(&mut self, index: usize) {
-        assert!(index < self.len);
-        self.len -= 1;
-        if index < self.len {
+        assert!(index < self.len());
+        self.bytes -= self.layout.size();
+        if index < self.len() {
             unsafe {
-                let last_ptr = self.as_ptr().add(self.len * self.layout.size());
+                let last_ptr = self.as_ptr().add(self.bytes);
                 let ptr = self.as_mut_ptr().add(index * self.layout.size());
                 std::ptr::copy_nonoverlapping(last_ptr, ptr, self.layout.size());
             }
@@ -87,25 +95,24 @@ impl TypeErasedVec {
     }
 
     pub fn clear(&mut self) {
-        self.len = 0;
+        self.bytes = 0;
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len * self.layout.size()) }
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.bytes) }
     }
 
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr(), self.len * self.layout.size()) }
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr(), self.bytes) }
     }
 
     pub fn as_typed_slice<T>(&self) -> &[T] {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const T, self.len) }
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const T, self.len()) }
     }
 
     pub fn as_typed_slice_mut<T>(&mut self) -> &mut [T] {
         let layout = std::alloc::Layout::new::<T>();
-        let number_of_elements = (self.capacity * self.layout.size()) / layout.size();
-        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, number_of_elements) }
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, self.bytes / layout.size()) }
     }
 
     pub fn as_ptr(&self) -> *const u8 {
@@ -124,8 +131,8 @@ impl TypeErasedVec {
         self.data.as_ptr() as *mut T
     }
 
-    pub fn len     (&self) -> usize              { self.len      }
-    pub fn is_empty(&self) -> bool               { self.len == 0 }
+    pub fn len     (&self) -> usize              { self.bytes / self.layout.size() }
+    pub fn is_empty(&self) -> bool               { self.len() == 0 }
     pub fn capacity(&self) -> usize              { self.capacity }
     pub fn layout  (&self) -> std::alloc::Layout { self.layout   }
 

@@ -107,17 +107,17 @@ fn benchmark_main()
     println!("Vec: {:?}, SparseSet: {:?}", a, b);
 }
 
+
 fn main() 
-{
+{   
     let mut vec = TypeErasedVec::new::<u8>();
-    vec.push::<i32>(1);
-    vec.as_typed_slice_mut::<u8>()[0] = 1;
-    vec.as_typed_slice_mut::<u8>()[1] = 2;
-    vec.as_typed_slice_mut::<u8>()[2] = 3;
-    vec.as_typed_slice_mut::<u8>()[3] = 4;
+    vec.push(1);
+    let t = vec.as_slice()[0];
+    vec.push(2);
+    vec.push(3);
+    println!("{t}");
 
-    println!("{:?}", vec.as_typed_slice_mut::<u8>());
-
+    /* 
     let mut ecs = ecs::ECS::new();
 
     let entity1 = ecs.create_entity();
@@ -125,6 +125,8 @@ fn main()
     let entity3 = ecs.create_entity();
 
     ecs.add_component::<A>(entity1);
+
+
     ecs.add_component::<B>(entity1);
 
     ecs.add_component::<A>(entity2);
@@ -148,7 +150,7 @@ fn main()
     println!("Serialized: {:?}", serialized);
 
     // stress_test();
-    
+    */
 }
 
 fn stress_test() -> u32
