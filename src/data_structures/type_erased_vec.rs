@@ -21,6 +21,11 @@ impl TypeErasedVec {
         }
     }
 
+    pub fn reserve_typed<T>(&mut self, additional: usize) {
+        let layout = std::alloc::Layout::new::<T>();
+        self.reserve(additional * layout.size() / self.layout.size());
+    }
+
     pub fn reserve(&mut self, additional: usize) {
         let new_len = self.len + additional;
         if new_len > self.capacity {
@@ -39,31 +44,22 @@ impl TypeErasedVec {
         }
     }
 
-    pub fn cast<T>(&self, ptr: *const u8) -> *const T {
-        ptr as *const T
-    }
-
-    pub fn cast_mut<T>(&mut self, ptr: *mut u8) -> *mut T {
-        ptr as *mut T
-    }
-
-    pub fn emplace(&mut self) -> *mut u8 {
+    pub fn emplace(&mut self) {
         if self.len == self.capacity {
-            self.reserve((self.capacity + 1) * 2);
+            self.reserve(self.capacity + 1);
         }
-        let ptr = unsafe { self.data.as_ptr().add(self.len * self.layout.size()) };
+        unsafe { self.data.as_ptr().add(self.len * self.layout.size()) };
         self.len += 1;
-        ptr
     }
 
-    pub fn emplace_typed<T>(&mut self) -> *mut T {
-        let ptr = self.emplace();
-        self.cast_mut(ptr)
+    pub fn emplace_typed<T>(&mut self) {
+        self.reserve_typed::<T>(1);
+        self.emplace();
     }
 
     pub fn push<T>(&mut self, value: T) {
-        let ptr = self.emplace();
-        unsafe { std::ptr::write(ptr as *mut T, value) };
+        self.emplace_typed::<T>();
+        *self.get_typed_mut::<T>(self.len - 1) = value;
     }
 
     pub fn get_typed<T>(&self, index: usize) -> &T {
@@ -72,8 +68,9 @@ impl TypeErasedVec {
 
     pub fn get_typed_mut<T>(&mut self, index: usize) -> &mut T {
         assert!(index < self.len);
+        let layout = std::alloc::Layout::new::<T>();
         unsafe {
-            &mut *(self.data.as_ptr().add(index * self.layout.size()) as *mut T)
+            &mut *(self.data.as_ptr().add(index * layout.size()) as *mut T)
         }
     }
 
@@ -106,9 +103,9 @@ impl TypeErasedVec {
     }
 
     pub fn as_typed_slice_mut<T>(&mut self) -> &mut [T] {
-        unsafe {
-            std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, self.len)
-        }
+        let layout = std::alloc::Layout::new::<T>();
+        let number_of_elements = (self.capacity * self.layout.size()) / layout.size();
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, number_of_elements) }
     }
 
     pub fn as_ptr(&self) -> *const u8 {
