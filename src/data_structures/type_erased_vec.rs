@@ -134,6 +134,22 @@ impl TypeErasedVec {
     pub fn is_empty(&self) -> bool               { self.len == 0 }
     pub fn capacity(&self) -> usize              { self.capacity }
     pub fn layout  (&self) -> std::alloc::Layout { self.layout   }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, u8> {
+        self.as_slice().iter()
+    }
+
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, u8> {
+        self.as_slice_mut().iter_mut()
+    }
+
+    pub fn iter_typed<T>(&self) -> std::slice::Iter<'_, T> {
+        self.as_typed_slice::<T>().iter()
+    }
+
+    pub fn iter_typed_mut<T>(&mut self) -> std::slice::IterMut<'_, T> {
+        self.as_typed_slice_mut::<T>().iter_mut()
+    }
 }
 
 impl Drop for TypeErasedVec {

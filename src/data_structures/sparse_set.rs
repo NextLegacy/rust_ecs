@@ -14,7 +14,7 @@ pub struct SparseSet<const PAGE_SIZE: usize>
 {
     dense_indecies: TypeErasedVec,
     dense: TypeErasedVec,
-    sparse: HashMap<usize, [usize; PAGE_SIZE]>,
+    sparse: HashMap<usize, [usize; PAGE_SIZE]>, // TODO: get rid of hashmap
 }
 
 impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
@@ -23,6 +23,9 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
     {
         let mut dense = TypeErasedVec::new::<T>();
         let mut dense_indecies = TypeErasedVec::new::<SpraseDenseValueIndex>();
+
+        dense.reserve(PAGE_SIZE);
+        dense_indecies.reserve(PAGE_SIZE);
 
         dense.emplace();
         dense_indecies.emplace();
@@ -45,7 +48,7 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
     pub fn emplace(&mut self, index: usize) -> bool
     {
         let (page, index) = Self::map_index(index);
-        let page_sparse = self.sparse.entry(page).or_insert([0; PAGE_SIZE]);
+        let page_sparse = self.sparse.entry(page).or_insert_with(|| [0; PAGE_SIZE]);
 
         if page_sparse[index] != 0
         {
@@ -124,23 +127,25 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
         }
     }
 
-    pub fn for_each<T>(&self, action: &mut dyn FnMut(usize, &T))
+    pub fn iter<T: 'static>(&self) -> impl Iterator<Item = (usize, &T)>
     {
-        for i in 1..self.dense.len()
-        {
-            let dense_value_index = self.dense_indecies.get_typed::<SpraseDenseValueIndex>(i);
-            let dense_value = self.dense.get_typed::<T>(i);
-            action(dense_value_index.sparse_page * PAGE_SIZE + dense_value_index.sparse_index, dense_value);
-        }
+        let dense_indices = self.dense_indecies.iter_typed::<SpraseDenseValueIndex>().skip(1);
+        let dense_values = self.dense.iter_typed::<T>().skip(1);
+
+        dense_indices.zip(dense_values).map(|(index, value)| {
+            let idx = index.sparse_page * PAGE_SIZE + index.sparse_index;
+            (idx, value)
+        })
     }
 
-    pub fn for_each_mut<T>(&mut self, action: &mut dyn FnMut(usize, &mut T))
+    pub fn iter_mut<T: 'static>(&mut self) -> impl Iterator<Item = (usize, &mut T)>
     {
-        for i in 1..self.dense.len()
-        {
-            let dense_value_index = self.dense_indecies.get_typed::<SpraseDenseValueIndex>(i);
-            let dense_value = self.dense.get_typed_mut::<T>(i);
-            action(dense_value_index.sparse_page * PAGE_SIZE + dense_value_index.sparse_index, dense_value);
-        }
+        let dense_indices = self.dense_indecies.iter_typed::<SpraseDenseValueIndex>().skip(1);
+        let dense_values = self.dense.iter_typed_mut::<T>().skip(1);
+
+        dense_indices.zip(dense_values).map(|(index, value)| {
+            let idx = index.sparse_page * PAGE_SIZE + index.sparse_index;
+            (idx, value)
+        })
     }
 }

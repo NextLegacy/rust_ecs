@@ -73,7 +73,7 @@ impl ECSStorage
                     {
                         if let Some(components) = self.components.get_mut(&component_type_uuid)
                         {
-                            components.remove(uuid as usize);
+                            components.remove(uuid);
                         }
                     }
                     component_type_uuid+=1;
@@ -137,32 +137,26 @@ impl ECSStorage
             None
         }
     }
-    pub fn for_each_component<T>(&self, mut action: &dyn Fn(usize, &T)) where T: 'static
+    pub fn iter_components<T: 'static>(&self) -> Option<impl Iterator<Item = (usize, &T)>>
     {
         let component_type_id = TypeId::of::<T>();
         let component_type_uuid = match self.component_type_id_to_uuid.get(&component_type_id) {
             Some(&uuid) => uuid,
-            None => return,
+            None => return None,
         };
 
-        if let Some(components) = self.components.get(&component_type_uuid)
-        {
-            components.for_each::<T>(&mut action);
-        }
+        self.components.get(&component_type_uuid).map(|components| components.iter::<T>())
     }
 
-    pub fn for_each_component_mut<T>(&mut self, mut action: impl FnMut(usize, &mut T)) where T: 'static
+    pub fn iter_components_mut<T: 'static>(&mut self) -> Option<impl Iterator<Item = (usize, &mut T)>>
     {
         let component_type_id = TypeId::of::<T>();
         let component_type_uuid = match self.component_type_id_to_uuid.get(&component_type_id) {
             Some(&uuid) => uuid,
-            None => return,
+            None => return None,
         };
 
-        if let Some(components) = self.components.get_mut(&component_type_uuid)
-        {
-            components.for_each_mut::<T>(&mut action);
-        }
+        self.components.get_mut(&component_type_uuid).map(|components| components.iter_mut::<T>())
     }
 }
 
@@ -207,14 +201,14 @@ impl ECS
         self.storage.get_component::<T>(uuid)
     }
 
-    pub fn for_each_component<T>(&self, action: &dyn Fn(usize, &T)) where T: 'static
+    pub fn iter_components<T: 'static>(&self) -> Option<impl Iterator<Item = (usize, &T)>>
     {
-        self.storage.for_each_component::<T>(action);
+        self.storage.iter_components::<T>()
     }
 
-    pub fn for_each_component_mut<T>(&mut self, action: impl FnMut(usize, &mut T)) where T: 'static
+    pub fn iter_components_mut<T: 'static>(&mut self) -> Option<impl Iterator<Item = (usize, &mut T)>>
     {
-        self.storage.for_each_component_mut::<T>(action);
+        self.storage.iter_components_mut::<T>()
     }
 
     pub fn storage(&self) -> &ECSStorage
@@ -229,7 +223,12 @@ impl ECS
 
     pub fn register_system<TSystem>(&mut self) where TSystem: System + 'static
     {
-        self.dynamic_systems.entry(TypeId::of::<TSystem>()).or_insert_with(|| Box::new(TSystem::new()));
+        let layout = std::alloc::Layout::new::<TSystem>();
+        let ptr = unsafe { std::alloc::alloc(layout) };
+
+        let system = unsafe { std::ptr::read(ptr as *const TSystem) };
+    
+        self.dynamic_systems.entry(TypeId::of::<TSystem>()).or_insert_with(|| Box::new(system));
     }
 
     pub fn start(&mut self)
@@ -262,5 +261,16 @@ impl ECS
         {
             system.render(&mut self.storage);
         }
+    }
+
+    pub fn serialize<T>(&mut self) -> String where T: serde::Serialize + 'static
+    {
+        let mut result = String::new();
+    
+        self.iter_components::<T>().unwrap().for_each(|(_, component)| {
+            result.push_str(&serde_json::to_string(component).unwrap());
+        });
+
+        result
     }
 }

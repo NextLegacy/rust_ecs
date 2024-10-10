@@ -1,37 +1,43 @@
 use ecs::system::System;
+use serde::Serialize;
 
 mod ecs;
 mod data_structures;
 
+#[derive(Serialize)]
 pub struct A { x: i32 }
 pub struct B { y: f32 }
 
 pub struct MySystem;
 
-impl ecs::system::System for MySystem {
-    fn new() -> Self {
-        MySystem
-    }
-
+impl ecs::system::System for MySystem 
+{
     fn start(&self, ecs: &mut ecs::ECSStorage) {
-        ecs.for_each_component_mut(&|entityUUID, component: &mut A| {
-            component.x = 10;
+        ecs.iter_components_mut::<A>().unwrap().for_each(|(entity, a)| {
+            a.x = entity as i32;
         });
 
-        ecs.for_each_component_mut(&|entityUUID, component: &mut B| {
-            component.y = 10.0;
+        ecs.iter_components_mut::<B>().unwrap().for_each(|(entity, b)| {
+            b.y = entity as f32;
         });
     }
 
     fn update(&self, ecs: &mut ecs::ECSStorage) {
-        ecs.for_each_component::<A>(&|entity, a| {
-            println!("Entity {} has A: {:?}", entity, a.x);
+        ecs.iter_components::<A>().unwrap().for_each(|(entity, a)| {
+            println!("Entity {} has A: {}", entity, a.x);
         });
 
-        ecs.for_each_component::<B>(&|entity, b| {
-            println!("Entity {} has B: {:?}", entity, b.y);
+        ecs.iter_components::<B>().unwrap().for_each(|(entity, b)| {
+            println!("Entity {} has B: {}", entity, b.y);
         });
     }
+}
+
+fn benchmark(action: impl FnOnce()) -> std::time::Duration
+{
+    let start = std::time::Instant::now();
+    action();
+    start.elapsed()
 }
 
 fn main() 
@@ -51,14 +57,12 @@ fn main()
 
     ecs.remove_component::<B>(entity2);
 
-    if let Some(b) = ecs.get_component::<B>(entity1) {
-        println!("Entity 1 has B: {:?}", b.y);
-    } else {
-        println!("Entity 1 does not have B");
-    }
-
     ecs.register_system::<MySystem>();
 
+    let serialized = ecs.serialize::<A>();
+    
     ecs.start();
     ecs.update();
+
+    println!("Serialized: {:?}", serialized);
 }
