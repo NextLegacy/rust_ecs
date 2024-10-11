@@ -1,84 +1,72 @@
-use std::{ptr::NonNull};
+use std::{collections::HashMap};
 
-use super::type_erased_vec::TypeErasedVec;
+const INVALID_INDEX: usize = usize::MAX;
 
-pub struct SpraseDenseValueIndex
-{
+pub struct SparseDenseValueIndex {
     sparse_page: usize,
     sparse_index: usize,
 }
 
-impl SpraseDenseValueIndex
-{
-    pub fn new(sparse_page: usize, sparse_index: usize) -> Self
-    {
-        Self
-        {
+impl SparseDenseValueIndex {
+    pub fn new(sparse_page: usize, sparse_index: usize) -> Self {
+        Self {
             sparse_page,
-            sparse_index
+            sparse_index,
         }
     }
 }
 
-pub struct SparseSet<const PAGE_SIZE: usize>
-{
-    dense_indecies: TypeErasedVec,
-    dense: TypeErasedVec,
-    sparse: Vec<[usize; PAGE_SIZE]>, // Use a vector of options instead of a hashmap
+pub struct SparseSet<K, T, const PAGE_SIZE: usize> {
+    dense_indices: Vec<SparseDenseValueIndex>,
+    dense: Vec<T>,
+    sparse_pages: HashMap<K, usize>,
+    sparse: Vec<[usize; PAGE_SIZE]>,
 }
 
-impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
+impl<K, T, const PAGE_SIZE: usize> SparseSet<K, T, PAGE_SIZE>
+where
+    K: Copy + PartialEq + Eq + std::hash::Hash + From<usize> + Into<usize> + Clone,
 {
-    pub fn new<T>() -> Self
-    {
-        let mut dense = TypeErasedVec::new::<T>();
-        let mut dense_indecies = TypeErasedVec::new::<SpraseDenseValueIndex>();
+    pub fn new() -> Self {
+        let mut dense = Vec::new();
+        let mut dense_indices = Vec::new();
         let mut sparse: Vec<[usize; PAGE_SIZE]> = Vec::new();
-
+    
         dense.reserve(PAGE_SIZE);
-        dense_indecies.reserve(PAGE_SIZE);
+        dense_indices.reserve(PAGE_SIZE);
         sparse.reserve(PAGE_SIZE);
 
-        dense.emplace();
-        dense_indecies.emplace();
-
-        Self
-        {
-            dense_indecies,
+        Self {
+            dense_indices,
             dense,
+            sparse_pages: HashMap::new(),
             sparse
         }
     }
 
-    fn map_index(index: usize) -> (usize, usize)
-    {
-        let page  = index / PAGE_SIZE;
-        let index = index % PAGE_SIZE;
+    fn map_index(index: K) -> (usize, usize) {
+        let page = index.into() / PAGE_SIZE;
+        let index = index.into() % PAGE_SIZE;
         (page, index)
     }
 
-    pub fn emplace(&mut self, index: usize) -> bool
-    {
+    pub fn set(&mut self, index: K, value: T) -> bool {
         let (page, index) = Self::map_index(index);
 
-        if page >= self.sparse.len() {
-            self.sparse.resize(page + 1, [0; PAGE_SIZE]);
-        }
+        let sparse_page_index = self.sparse_pages.entry(K::from(page)).or_insert_with(|| {
+            let page = [INVALID_INDEX; PAGE_SIZE];
+            self.sparse.push(page);
+            self.sparse.len() - 1
+        });
 
-        let page_sparse = &mut self.sparse[page];
-    
-        if page_sparse[index] != 0
-        {
+        let page_sparse = &mut self.sparse[*sparse_page_index];
+
+        if page_sparse[index] != INVALID_INDEX {
             return false;
         }
-        
-        self.dense.emplace();
-        self.dense_indecies.emplace();
-        //self.dense_indecies.push(SpraseDenseValueIndex::new(page, index));
 
-        let dense_index_value = self.dense_indecies.get_typed_mut::<SpraseDenseValueIndex>(self.dense_indecies.len() - 1);
-        dense_index_value.sparse_index = index;
-        dense_index_value.sparse_page = page;
+        self.dense.push(value);
+        self.dense_indices.push(SparseDenseValueIndex::new(page, index));
 
         let dense_index = self.dense.len() - 1;
 
@@ -87,88 +75,102 @@ impl<const PAGE_SIZE: usize> SparseSet<PAGE_SIZE>
         true
     }
 
-    pub fn set<T>(&mut self, index: usize, value: T)
-    {
-        if self.emplace(index)
-        {
-            let dense_index = self.dense.len() - 1;
-            *self.dense.get_typed_mut::<T>(dense_index) = value;
+    pub fn get(&self, index: K) -> Option<&T> {
+        let (page, index) = Self::map_index(index);
+        
+        let sparse_page_index = self.sparse_pages.get(&K::from(page))?;
+        let page_sparse = &self.sparse[*sparse_page_index];
+        let dense_index = page_sparse[index];
+
+        if dense_index != INVALID_INDEX {
+            self.dense.get(dense_index as usize)
+        } else {
+            None
         }
     }
 
-    pub fn get<T>(&self, index: usize) -> Option<&T>
-    {
+    pub fn get_mut(&mut self, index: K) -> Option<&mut T> {
         let (page, index) = Self::map_index(index);
-        self.sparse.get(page).and_then(|page_sparse| 
-        {
+        self.sparse_pages.get(&K::from(page)).and_then(|&sparse_page_index| {
+            let page_sparse = &self.sparse[sparse_page_index];
             let dense_index = page_sparse[index];
-            if dense_index != 0
-            {
-                Some(self.dense.get_typed::<T>(dense_index))
-            }
-            else
-            {
+            if dense_index != INVALID_INDEX {
+                self.dense.get_mut(dense_index as usize)
+            } else {
                 None
             }
         })
     }
 
-    pub fn remove(&mut self, index: usize)
-    {
+    pub fn has(&self, index: K) -> bool {
+        let (page, index) = Self::map_index(index);
+        self.sparse_pages.get(&K::from(page)).map_or(false, |&sparse_page_index| {
+            self.sparse[sparse_page_index][index] != INVALID_INDEX
+        })
+    }
+
+    pub fn get_or_insert_with(&mut self, index: K, default: impl FnOnce() -> T) -> &mut T {
+        if self.has(index) {
+            self.get_mut(index).unwrap()
+        } else {
+            self.set(index, default());
+            self.get_mut(index).unwrap()
+        }
+    }
+
+    pub fn get_or_insert(&mut self, index: K, default: T) -> &mut T {
+        self.get_or_insert_with(index, || default)
+    }
+
+    pub fn remove(&mut self, index: K) {
         let (page, index) = Self::map_index(index);
 
-        if let Some(page_sparse) = self.sparse.get_mut(page)
-        {
+        if let Some(&sparse_page_index) = self.sparse_pages.get(&K::from(page)) {
+            let page_sparse = &mut self.sparse[sparse_page_index];
             let dense_index = page_sparse[index];
             let last_dense_index = self.dense.len() - 1;
-            if dense_index != 0
-            {
-                let last_dense_value_index = self.dense_indecies.get_typed::<SpraseDenseValueIndex>(last_dense_index);
+            if dense_index != INVALID_INDEX {
+                let last_dense_value_index = self.dense_indices.get(last_dense_index).unwrap();
                 let last_page = last_dense_value_index.sparse_page;
                 let last_index = last_dense_value_index.sparse_index;
 
-                page_sparse[index] = 0;
+                page_sparse[index] = INVALID_INDEX;
 
-                if dense_index != last_dense_index
-                {
-                    let last_page_sparse = self.sparse.get_mut(last_page).unwrap();
+                if dense_index as usize != last_dense_index {
+                    let last_page_sparse = &mut self.sparse[self.sparse_pages[&K::from(last_page)]];
                     last_page_sparse[last_index] = dense_index;
-                    self.dense.remove_swap_with_last(dense_index);
-                    self.dense_indecies.remove_swap_with_last(dense_index);
-                }
-                else
-                {
-                    self.dense.remove_swap_with_last(dense_index);
-                    self.dense_indecies.remove_swap_with_last(dense_index);
+                    self.dense.swap_remove(dense_index);
+                    self.dense_indices.swap_remove(dense_index);
+                } else {
+                    self.dense.swap_remove(dense_index);
+                    self.dense_indices.swap_remove(dense_index);
                 }
             }
         }
     }
 
-    pub fn iter<T: 'static>(&self) -> impl Iterator<Item = (usize, &T)>
-    {
-        let dense_indices = self.dense_indecies.iter_typed::<SpraseDenseValueIndex>().skip(1);
-        let dense_values = self.dense.iter_typed::<T>().skip(1);
+    pub fn clear(&mut self) {
+        self.dense.clear();
+        self.dense_indices.clear();
+        self.sparse.clear();
+        self.sparse_pages.clear();
+    }
 
-        dense_indices.zip(dense_values).map(|(index, value)| {
+    pub fn iter(&self) -> impl Iterator<Item = (K, &T)> {
+        self.dense_indices.iter().zip(self.dense.iter()).map(|(index, value)| {
             let idx = index.sparse_page * PAGE_SIZE + index.sparse_index;
-            (idx, value)
+            (K::from(idx), value)
         })
     }
 
-    pub fn iter_mut<T: 'static>(&mut self) -> impl Iterator<Item = (usize, &mut T)>
-    {
-        let dense_indices = self.dense_indecies.iter_typed::<SpraseDenseValueIndex>().skip(1);
-        let dense_values = self.dense.iter_typed_mut::<T>().skip(1);
-
-        dense_indices.zip(dense_values).map(|(index, value)| {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (K, &mut T)> {
+        self.dense_indices.iter().zip(self.dense.iter_mut()).map(|(index, value)| {
             let idx = index.sparse_page * PAGE_SIZE + index.sparse_index;
-            (idx, value)
+            (K::from(idx), value)
         })
     }
 
-    pub fn len(&self) -> usize
-    {
-        self.dense.len() - 1
+    pub fn len(&self) -> usize {
+        self.dense.len() - 1 // Subtract 1 to account for the null type
     }
 }

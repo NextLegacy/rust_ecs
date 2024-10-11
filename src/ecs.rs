@@ -1,32 +1,33 @@
-use std::{any::{Any, TypeId}, collections::HashMap, iter, ops::Deref};
-
 pub mod component;
 pub mod system;
 pub mod entity;
+pub mod archtype;
 pub mod query;
 
-use component::{Component, ComponentTypeUUID, ComponentUUID};
+use std::alloc::Layout;
+use std::any::{Any, TypeId};
+use std::collections::{HashMap, HashSet};
+
+use archtype::{ArchType, ArchTypeUUID, Component};
 use entity::EntityUUID;
-use query::{ComponentQuery, ComponentQueryMut};
-use system::System;
 
 use crate::data_structures::sparse_set::SparseSet;
 use crate::data_structures::bit_set::BitSet;
 
+
 pub struct ECSStorage
 {
-    components: HashMap<ComponentTypeUUID, SparseSet<1000>>,
-    component_type_id_to_uuid: HashMap<TypeId, ComponentTypeUUID>,
-    entity_components_bitset: HashMap<EntityUUID, BitSet>,
-    deleted_entities: Vec<EntityUUID>,
-    entity_uuid_counter: EntityUUID,
-    component_uuid_counter: ComponentUUID,
+    storage: SparseSet<ArchTypeUUID, SparseSet<EntityUUID, Box<dyn Any>, 1000>, 1000>,
+    component_bitsets: SparseSet<ArchTypeUUID, BitSet, 1000>,
+    archtype_constructors: SparseSet<ArchTypeUUID, Box<dyn Fn() -> Box<dyn Any>>, 1000>,
+    entity_components: SparseSet<EntityUUID, BitSet, 1000>,
+
+    changes: SparseSet<EntityUUID, HashMap<ArchTypeUUID, bool>, 1000>,
 }
 
 pub struct ECS
 {
-    storage: ECSStorage,
-    dynamic_systems: HashMap<TypeId, Box<dyn System>>,
+    pub storage: ECSStorage,
 }
 
 impl ECSStorage
@@ -35,141 +36,92 @@ impl ECSStorage
     {
         Self
         {
-            components: HashMap::new(),
-            component_type_id_to_uuid: HashMap::new(),
-            entity_components_bitset: HashMap::new(),
-            deleted_entities: Vec::new(),
-            entity_uuid_counter: 0,
-            component_uuid_counter: 0,
+            storage: SparseSet::new(),
+            component_bitsets: SparseSet::new(),
+            archtype_constructors: SparseSet::new(),
+            entity_components: SparseSet::new(),
+            changes: SparseSet::new(),
         }
+    }
+
+    pub fn get_component_bitset<T: 'static + Component>(&mut self) -> &BitSet
+    {
+        let component_type_id = TypeId::of::<T>();
+        self.component_bitsets.get_or_insert_with(component_type_id.into(), BitSet::new)
+    }
+
+    pub fn get_archtype_bitset<T: 'static + for<'a> ArchType<'a>>(&mut self) -> &BitSet
+    {
+        let archtype_uuid = ArchTypeUUID::of::<T>(self);
+        self.component_bitsets.get_or_insert_with(archtype_uuid, BitSet::new)
+    }
+
+    pub fn archtype_bitset_get_or_insert_with<T: 'static + for<'a> ArchType<'a>>(&mut self, default: impl FnOnce() -> BitSet) -> &BitSet
+    {
+        let archtype_uuid = ArchTypeUUID::of::<T>(self);
+        self.component_bitsets.get_or_insert_with(archtype_uuid, default)
     }
 
     pub fn create_entity(&mut self) -> EntityUUID
     {
-        let uuid = if self.deleted_entities.is_empty()
-        {
-            self.entity_uuid_counter += 1;
-            self.entity_uuid_counter
-        }
-        else
-        {
-            self.deleted_entities.pop().unwrap()
-        };
-
-        self.entity_components_bitset.insert(uuid, BitSet::new());
-
-        uuid
+        rand::random::<usize>().into()
     }
 
-    pub fn remove_entity(&mut self, uuid: EntityUUID) -> bool
+    pub fn register<T: for<'a> ArchType<'a> + Any + 'static>(&mut self, default: impl Fn() -> T + 'static)
     {
-        if let Some(bit_set) = self.entity_components_bitset.remove(&uuid) {
-            let mut component_type_uuid = 0;
-            for bits in bit_set.data() {
-                let mut bit = 0;
-                while bit < usize::BITS as usize {
-                    if bits & (1 << bit) != 0 {
-                        let component_type_id = self.component_type_id_to_uuid.iter().find(|(_, &uuid)| uuid == component_type_uuid).unwrap().0;
-                        let component_type_uuid = self.component_type_id_to_uuid.get(component_type_id).unwrap();
-                        let components = self.components.get_mut(component_type_uuid).unwrap();
-                        components.remove(uuid);
-                    }
-                    bit += 1;
-                    component_type_uuid += 1;
+        let archtype_uuid = ArchTypeUUID::of::<T>(self);
+
+        let archtype_constructor = Box::new(move || Box::new(default()) as Box<dyn Any>);
+
+        self.archtype_constructors.set(archtype_uuid, archtype_constructor);
+    }   
+
+    pub fn add_component<T: 'static + for<'a> ArchType<'a>>(&mut self, entity: EntityUUID)
+    {
+        let archtype_uuid = ArchTypeUUID::of::<T>(self);
+        self.changes.get_or_insert(entity, HashMap::new()).insert(archtype_uuid, true);
+    }
+
+    pub fn remove_component<T: 'static + for<'a> ArchType<'a>>(&mut self, entity: EntityUUID)
+    {
+        let archtype_uuid = ArchTypeUUID::of::<T>(self);
+        self.changes.get_or_insert(entity, HashMap::new()).insert(archtype_uuid, false);
+    }
+
+    pub fn update_archtypes(&mut self)
+    {
+        for (entity, changes) in self.changes.iter()
+        {
+            for (archtype_uuid, add) in changes.iter()
+            {
+                let archtype = self.storage.get_or_insert_with(*archtype_uuid, SparseSet::new);
+
+                // move components of entity to new archtype
+                if *add
+                {
+                    let entity_components = self.entity_components.get_or_insert_with(entity, BitSet::new);
+                    entity_components.union(self.component_bitsets.get_or_insert_with(*archtype_uuid, BitSet::new));
+
+                    let archtype_constructor = self.archtype_constructors.get(*archtype_uuid).unwrap();
+                    let component = archtype_constructor();
+
+                    archtype.set(entity, component);
+                }
+                else
+                {
+                    let entity_components = self.entity_components.get_mut(entity).unwrap();
+                    entity_components.difference(self.component_bitsets.get_or_insert_with(*archtype_uuid, BitSet::new));
+
+                    archtype.remove(entity);
                 }
             }
-            self.deleted_entities.push(uuid);
-            true
-        } else {
-            false
         }
     }
 
-    pub fn has_entity(&self, uuid: EntityUUID) -> bool
+    pub fn iter<T: 'static + for<'a> ArchType<'a>>(&mut self) -> impl Iterator<Item = (EntityUUID, &T)>
     {
-        self.entity_components_bitset.contains_key(&uuid)
-    }
-
-    pub fn add_component<T>(&mut self, uuid: EntityUUID) where T: 'static
-    {
-        let component_type_id = TypeId::of::<T>();
-        let component_type_uuid = *self.component_type_id_to_uuid.entry(component_type_id).or_insert_with(|| 
-        {
-            self.component_uuid_counter += 1;
-            self.component_uuid_counter
-        });
-
-        let components = self.components.entry(component_type_uuid).or_insert_with(|| SparseSet::<1000>::new::<T>());
-        
-        components.emplace(uuid);
-
-        if let Some(bitset) = self.entity_components_bitset.get_mut(&uuid) {
-            bitset.set(component_type_uuid);
-        }
-    }
-
-    pub fn remove_component<T>(&mut self, uuid: EntityUUID) where T: 'static
-    {
-        let component_type_id = TypeId::of::<T>();
-        let component_type_uuid = *self.component_type_id_to_uuid.get(&component_type_id).unwrap();
-
-        if let Some(components) = self.components.get_mut(&component_type_uuid)
-        {
-            components.remove(uuid);
-        }
-    }
-
-    pub fn get_component<T>(&self, uuid: EntityUUID) -> Option<&T> where T: 'static
-    {
-        let component_type_id = TypeId::of::<T>();
-        let component_type_uuid = match self.component_type_id_to_uuid.get(&component_type_id) {
-            Some(&uuid) => uuid,
-            None => return None,
-        };
-
-        if let Some(components) = self.components.get(&component_type_uuid)
-        {
-            components.get::<T>(uuid)
-        }
-        else
-        {
-            None
-        }
-    }
-    pub fn iter_components<T: 'static>(&self) -> Box<dyn Iterator<Item = (usize, &T)> + '_>
-    {
-        let component_type_id = TypeId::of::<T>();
-        let component_type_uuid = match self.component_type_id_to_uuid.get(&component_type_id) {
-            Some(&uuid) => uuid,
-            None => return Box::new(iter::empty()),
-        };
-
-        match self.components.get(&component_type_uuid) {
-            Some(components) => Box::new(components.iter::<T>()),
-            None => Box::new(iter::empty()),
-        }
-    }
-
-    pub fn iter_components_mut<T: 'static>(&mut self) -> Box<dyn Iterator<Item = (usize, &mut T)> + '_>
-    {
-        let component_type_id = TypeId::of::<T>();
-        let component_type_uuid = match self.component_type_id_to_uuid.get(&component_type_id) {
-            Some(&uuid) => uuid,
-            None => return Box::new(iter::empty()),
-        };
-
-        match self.components.get_mut(&component_type_uuid) {
-            Some(components) => Box::new(components.iter_mut::<T>()),
-            None => Box::new(iter::empty()),
-        }
-    }
-
-    pub fn query<'a, T: ComponentQuery<'a>>(&'a self) -> T::Iter {
-        T::query(self)
-    }
-
-    pub fn query_mut<'a, T: ComponentQueryMut<'a>>(&'a mut self) -> T::Iter {
-        T::query_mut(self)
+        let archtype_uuid = ArchTypeUUID::of::<T>(self);
+        self.storage.get_or_insert_with(archtype_uuid, SparseSet::new).iter().map(|(entity, component)| (entity, component.downcast_ref::<T>().unwrap()))
     }
 }
 
@@ -180,106 +132,6 @@ impl ECS
         Self
         {
             storage: ECSStorage::new(),
-            dynamic_systems: HashMap::new(),
         }
-    }
-
-    pub fn create_entity(&mut self) -> EntityUUID
-    {
-        self.storage.create_entity()
-    }
-
-    pub fn remove_entity(&mut self, uuid: EntityUUID) -> bool
-    {
-        self.storage.remove_entity(uuid)
-    }
-
-    pub fn has_entity(&self, uuid: EntityUUID) -> bool
-    {
-        self.storage.has_entity(uuid)
-    }
-
-    pub fn add_component<T>(&mut self, uuid: EntityUUID) where T: 'static
-    {
-        self.storage.add_component::<T>(uuid);
-    }
-
-    pub fn remove_component<T>(&mut self, uuid: EntityUUID) where T: 'static
-    {
-        self.storage.remove_component::<T>(uuid);
-    }
-
-    pub fn get_component<T>(&self, uuid: EntityUUID) -> Option<&T> where T: 'static
-    {
-        self.storage.get_component::<T>(uuid)
-    }
-
-    pub fn iter_components<T: 'static>(&self) -> impl Iterator<Item = (usize, &T)>
-    {
-        self.storage.iter_components::<T>()
-    }
-
-    pub fn iter_components_mut<T: 'static>(&mut self) -> impl Iterator<Item = (usize, &mut T)>
-    {
-        self.storage.iter_components_mut::<T>()
-    }
-
-    pub fn entities_count(&self) -> usize
-    {
-        self.storage.entity_components_bitset.len()
-    }
-
-    pub fn storage(&self) -> &ECSStorage
-    {
-        &self.storage
-    }
-
-    pub fn storage_mut(&mut self) -> &mut ECSStorage
-    {
-        &mut self.storage
-    }
-
-    pub fn register_system<TSystem>(&mut self) where TSystem: System + 'static
-    {
-        self.dynamic_systems.insert(TypeId::of::<TSystem>(), Box::new(TSystem::new()));
-    }
-
-    pub fn start(&mut self)
-    {
-        for system in self.dynamic_systems.values()
-        {
-            system.start(&mut self.storage);
-        }
-    }
-
-    pub fn update(&mut self)
-    {
-        for system in self.dynamic_systems.values()
-        {
-            system.update(&mut self.storage);
-        }
-    }
-
-    pub fn fixed_update(&mut self)
-    {
-        for system in self.dynamic_systems.values()
-        {
-            system.fixed_update(&mut self.storage);
-        }
-    }
-
-    pub fn render(&mut self)
-    {
-        for system in self.dynamic_systems.values()
-        {
-            system.render(&mut self.storage);
-        }
-    }
-
-    pub fn serialize<T: serde::Serialize + 'static>(&self) -> Result<String, serde_json::Error>
-    {
-        self.storage.query::<(&T,)>().map(|(entity, component)| {
-            serde_json::to_string(&component)
-        }).collect()
     }
 }

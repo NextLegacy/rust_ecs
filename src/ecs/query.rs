@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-
+/* 
 use super::ECSStorage;
 
 pub trait ComponentQuery<'a> {
@@ -284,3 +284,4 @@ impl <'a, T1: 'static, T2: 'static, T3: 'static> ComponentQueryMut<'a> for (&'a 
     }
 }
 
+*/
